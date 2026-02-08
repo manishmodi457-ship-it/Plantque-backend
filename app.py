@@ -22,7 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SERPAPI_KEY = "YOUR_SERPAPI_KEY" # Yahan apni key dalein
+SERPAPI_KEY = "0a168526fb158f23d7885039ce2bdca145b0044cc5a5a9f9089d64510b741b9b" # Yahan apni key dalein
 
 # --- OOPS BASED SECURITY & CACHE ENGINE ---
 
@@ -203,4 +203,5 @@ async def process_voice(data: VoiceRequest):
 if __name__ == "__main__":
     import uvicorn
     # High-Performance server execution
+
     uvicorn.run(app, host="0.0.0.0", port=8000, workers=4) # Multiple workers for high traffic
