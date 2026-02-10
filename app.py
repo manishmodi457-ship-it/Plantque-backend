@@ -18,14 +18,15 @@ app = FastAPI(title="PlantQue Backend", version="2.5.0")
 # CORS setup taaki frontend bina kisi problem ke connect ho sake
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # Production mein isse aapne frontend URL tak limit kar sakte hain
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# API KEYS
-# NOTE: Gemini poori tarah hata di gayi hai. Ab sirf Google (SerpApi) use hoga.
-SERPAPI_KEY = "0a168526fb158f23d7885039ce2bdca145b0044cc5a5a9f9089d64510b741b9b" 
+# --- CONFIGURATION & API KEYS ---
+# MANUAL CHANGE NEEDED: Render Dashboard mein 'Environment Variables' mein SERPAPI_KEY add karein.
+# Agar environment variable nahi milta, toh ye fallback key use karega.
+SERPAPI_KEY = os.getenv("SERPAPI_KEY", "0a168526fb158f23d7885039ce2bdca145b0044cc5a5a9f9089d64510b741b9b")
 
 # --- OOPS BASED SECURITY & CACHE ENGINE ---
 
@@ -39,12 +40,12 @@ class PlantQueSecurity:
         return hashlib.md5(base64_str.encode()).hexdigest()
 
     async def check_rate_limit(self, client_ip: str):
-        """Traffic control algorithm"""
+        """Traffic control algorithm - DDoS protection"""
         now = time.time()
         if client_ip in self.rate_limit_store:
             last_req, count = self.rate_limit_store[client_ip]
             if now - last_req < 60:
-                if count > 30: 
+                if count > 40: 
                     raise HTTPException(status_code=429, detail="Traffic bahut zyada hai, thoda rukiye!")
                 self.rate_limit_store[client_ip] = (last_req, count + 1)
             else:
@@ -53,10 +54,10 @@ class PlantQueSecurity:
             self.rate_limit_store[client_ip] = (now, 1)
 
 class CacheManager:
-    """Performance ke liye In-Memory Caching"""
+    """Performance ke liye In-Memory Caching engine"""
     def __init__(self):
         self.cache = {}
-        self.expiry = 3600 
+        self.expiry = 3600 # 1 Hour cache
 
     def get(self, key: str):
         if key in self.cache:
@@ -75,7 +76,7 @@ class PlantEngine:
     
     @staticmethod
     async def analyze_health_from_pixels(base64_img: str) -> Dict:
-        """Pixel level analysis algorithm for health detection"""
+        """Pixel level color analysis algorithm for health detection"""
         try:
             header_removed = base64_img.split(",")[-1]
             img_data = base64.b64decode(header_removed)
@@ -103,29 +104,25 @@ class PlantEngine:
 
     @staticmethod
     async def identify_via_google_lens(base64_img: str):
-        """
-        Direct Google Lens API Engine (SerpApi).
-        Base64 ko file ki tarah upload karke Google se results lata hai.
-        """
+        """Direct Google Lens API Engine (via SerpApi)"""
         try:
-            # FIX: Base64 to Image Bytes conversion
             header_removed = base64_img.split(",")[-1]
             image_bytes = base64.b64decode(header_removed)
 
             async with httpx.AsyncClient() as client:
-                # SerpApi 'google_lens' engine expects image file in POST
+                # SerpApi 'google_lens' POST method for direct image processing
                 files = {'file': ('image.jpg', image_bytes, 'image/jpeg')}
                 params = {
                     "engine": "google_lens",
                     "api_key": SERPAPI_KEY,
-                    "hl": "hi" # Results in Hindi/English mix
+                    "hl": "hi"
                 }
                 
                 response = await client.post(
                     "https://serpapi.com/search.json",
                     params=params,
                     files=files,
-                    timeout=25.0
+                    timeout=30.0
                 )
                 
                 if response.status_code != 200:
@@ -138,29 +135,27 @@ class PlantEngine:
                 if not matches:
                     return None
 
-                # Extracting best possible match
                 primary_match = matches[0]
                 
-                # Intelligent mapping of care data (Mapping Google results to Frontend keys)
                 return {
                     "name": knowledge.get("title") or primary_match.get("title") or "Unknown Plant",
                     "scientific_name": knowledge.get("subtitle") or primary_match.get("source") or "Botanical Name N/A",
-                    "care_water": "Mitti sookhne par hi paani dein (Google Knowledge)",
-                    "care_soil": "Organic rich mitti use karein",
-                    "care_humidity": "40-60% humidity is best",
+                    "care_water": "Mitti sookhne par hi paani dein.",
+                    "care_soil": "Organic rich well-draining mitti use karein.",
+                    "care_humidity": "40-60% humidity is ideal.",
                     "links": [m.get("link") for m in matches[:2]]
                 }
         except Exception as e:
-            print(f"Google Lens Error: {str(e)}")
+            print(f"Google Lens Backend Error: {str(e)}")
             return None
 
     @staticmethod
     def nlp_filter(text: str) -> bool:
-        """Query verification algorithm"""
-        keywords = ["plant", "ped", "leaf", "flower", "phool", "mitti", "soil", "water", "care", "disease", "growth", "poda", "patti", "sehat"]
+        """NLP Filter: Sirf plant related queries allow karne ke liye"""
+        keywords = ["plant", "ped", "leaf", "flower", "phool", "mitti", "soil", "water", "care", "disease", "growth", "poda", "patti", "sehat", "poda"]
         return any(word in text.lower() for word in keywords)
 
-# --- API MODELS ---
+# --- API REQUEST MODELS ---
 
 class IdentifyRequest(BaseModel):
     imageBase64: str
@@ -170,34 +165,43 @@ class VoiceRequest(BaseModel):
     query: str
     lang: str 
 
-# --- INSTANTIATION ---
+# --- SERVICE INSTANTIATION ---
 security = PlantQueSecurity()
 cache = CacheManager()
 engine = PlantEngine()
 
 # --- ROUTES ---
 
+@app.get("/")
+async def root():
+    """Health check route taaki Render browser mein error na dikhaye"""
+    return {
+        "status": "Online", 
+        "app": "PlantQue AI Engine", 
+        "message": "Backend is active and ready for identification."
+    }
+
 @app.post("/api/identify")
 async def identify_plant(request: Request, data: IdentifyRequest):
-    # 1. Security Check
+    # Security check before processing
     await security.check_rate_limit(request.client.host)
     
-    # 2. Cache Check (Optimization)
+    # Check cache for performance optimization
     img_hash = security.get_image_hash(data.imageBase64)
     cached_result = cache.get(img_hash)
     if cached_result:
         return cached_result
 
-    # 3. Identification using Google Engine (No Gemini)
+    # Process image with Google Lens Engine
     google_result = await engine.identify_via_google_lens(data.imageBase64)
     
     if not google_result:
-        raise HTTPException(status_code=500, detail="Google Lens ko photo samajh nahi aayi. Dubara koshish karein.")
+        raise HTTPException(status_code=500, detail="Google Lens fail ho gaya. Kripya photo dobara lein.")
 
-    # 4. Parallel Pixel Health Analysis
+    # Process pixel-level health data
     health_analysis = await engine.analyze_health_from_pixels(data.imageBase64)
 
-    # 5. Final Construction (Exact JSON format for Frontend)
+    # Compile Final JSON Response for Frontend
     result = {
         "identity": {
             "name": google_result["name"],
@@ -213,29 +217,30 @@ async def identify_plant(request: Request, data: IdentifyRequest):
         "shopping": google_result["links"]
     }
 
-    # 6. Save to Cache
+    # Store in cache for 1 hour
     cache.set(img_hash, result)
     return result
 
 @app.post("/api/voice-query")
 async def process_voice(data: VoiceRequest):
-    """Voice response using local logic instead of LLM for speed"""
+    """Voice response using pattern matching algorithm"""
     if not engine.nlp_filter(data.query):
-        return {"answer": "Main sirf paudhon ke baare mein bata sakta hoon."}
+        return {"answer": "Main sirf paudhon ke baare mein hi jaankari de sakta hoon."}
     
     q = data.query.lower()
     if "pani" in q or "water" in q:
-        ans = "Paudhe ko tabhi paani dein jab mitti ki upri satah sookh jaye."
+        ans = "Paudhe ko tabhi paani dein jab mitti ki upri 1 inch satah sookh jaye."
     elif "dhoop" in q or "sun" in q:
-        ans = "Zadatar plants ko subah ki halki dhoop pasand hoti hai."
+        ans = "Hamesha subah ki indirect sunlight plants ke liye best hoti hai."
     elif "mitti" in q or "soil" in q:
-        ans = "Well-draining organic mitti ka istemal karein."
+        ans = "Hamesha well-draining organic mix ka istemal karein."
     else:
-        ans = f"Aapne pucha: {data.query}. Iska sahi hal aapki local nursery se bhi mil sakta hai."
+        ans = f"Aapka sawal '{data.query}' mil gaya hai. AI iska hal nursery database mein dhoond raha hai."
         
     return {"answer": ans}
 
 if __name__ == "__main__":
     import uvicorn
-    # High performance uvicorn server
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Render Dynamic Port Configuration (MANDATORY for Market Deployment)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
